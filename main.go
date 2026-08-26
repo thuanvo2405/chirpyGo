@@ -31,6 +31,14 @@ type User struct {
 	Email     string    `json:"email"`
 }
 
+type Chirp struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
+}
+
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg.fileserverHits.Add(1)
@@ -117,16 +125,24 @@ func main() {
 	})
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
-	mux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
+
+	mux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 		type parameters struct {
-			Body string `json:"body"`
+			Body   string `json:"body"`
+			UserID string `json:"user_id"`
 		}
 
 		decoder := json.NewDecoder(r.Body)
 		params := parameters{}
 		err := decoder.Decode(&params)
 		if err != nil {
-			respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+			respondWithError(w, http.StatusBadRequest, "Invalid request body")
+			return
+		}
+
+		userID, err := uuid.Parse(params.UserID)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "Invalid user ID")
 			return
 		}
 
@@ -144,11 +160,24 @@ func main() {
 			}
 		}
 
-		respondWithJSON(w, 200, struct {
-			Cleaned_body string `json:"cleaned_body"`
-		}{
-			Cleaned_body: strings.Join(words, " "),
+		newChirp, err := apiCfg.database.CreateChirp(r.Context(), database.CreateChirpParams{
+			Body:   strings.Join(words, " "),
+			UserID: userID,
 		})
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "Couldn't create chirp")
+			return
+		}
+
+		chirp := Chirp{
+			ID:        newChirp.ID,
+			CreatedAt: newChirp.CreatedAt,
+			UpdatedAt: newChirp.UpdatedAt,
+			Body:      newChirp.Body,
+			UserID:    newChirp.UserID,
+		}
+
+		respondWithJSON(w, http.StatusCreated, chirp)
 	})
 
 	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
@@ -160,13 +189,13 @@ func main() {
 		params := paramaters{}
 		err := decoder.Decode(&params)
 		if err != nil {
-			respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+			respondWithError(w, http.StatusBadRequest, "Invalid request body")
 			return
 		}
 
 		newUser, err := apiCfg.database.CreateUser(r.Context(), params.Email)
 		if err != nil {
-			respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+			respondWithError(w, http.StatusInternalServerError, "Couldn't create user")
 			return
 		}
 
