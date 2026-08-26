@@ -229,6 +229,32 @@ func main() {
 		respondWithJSON(w, http.StatusOK, chirps)
 	})
 
+	mux.HandleFunc("GET /api/chirps/{chirpID}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("chirpID")
+
+		uuid, err := uuid.Parse(id)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "Invalid chirp ID")
+			return
+		}
+
+		chirpDB, err := apiCfg.database.GetChirpById(r.Context(), uuid)
+		if err != nil {
+			respondWithError(w, http.StatusNotFound, "Chirp not found")
+			return
+		}
+
+		chirp := Chirp{
+			ID:        chirpDB.ID,
+			CreatedAt: chirpDB.CreatedAt,
+			UpdatedAt: chirpDB.UpdatedAt,
+			Body:      chirpDB.Body,
+			UserID:    chirpDB.UserID,
+		}
+
+		respondWithJSON(w, http.StatusOK, chirp)
+	})
+
 	s := &http.Server{
 		Addr:    ":8080",
 		Handler: mux,
