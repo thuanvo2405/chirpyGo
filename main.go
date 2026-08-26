@@ -209,6 +209,26 @@ func main() {
 		respondWithJSON(w, http.StatusCreated, user)
 	})
 
+	mux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
+		chirpsDB, err := apiCfg.database.GetAllChirps(r.Context())
+		if err != nil {
+			log.Fatalf("Can't get chirps: %v", err)
+		}
+
+		chirps := []Chirp{}
+		for _, dbChirp := range chirpsDB {
+			chirps = append(chirps, Chirp{
+				ID:        dbChirp.ID,
+				CreatedAt: dbChirp.CreatedAt,
+				UpdatedAt: dbChirp.UpdatedAt,
+				Body:      dbChirp.Body,
+				UserID:    dbChirp.UserID,
+			})
+		}
+
+		respondWithJSON(w, http.StatusOK, chirps)
+	})
+
 	s := &http.Server{
 		Addr:    ":8080",
 		Handler: mux,
