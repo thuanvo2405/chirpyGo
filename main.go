@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
+	"strings"
 	"sync/atomic"
 )
 
@@ -93,10 +95,18 @@ func main() {
 			return
 		}
 
+		invalid_words := []string{"kerfuffle", "sharbert", "fornax"}
+		words := strings.Split(params.Body, " ")
+		for idx, word := range words {
+			if slices.Contains(invalid_words, strings.ToLower(word)) {
+				words[idx] = "****"
+			}
+		}
+
 		respondWithJSON(w, 200, struct {
-			Valid bool `json:"valid"`
+			Cleaned_body string `json:"cleaned_body"`
 		}{
-			Valid: true,
+			Cleaned_body: strings.Join(words, " "),
 		})
 	})
 
