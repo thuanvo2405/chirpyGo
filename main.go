@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"github.com/thuanvo2405/chirpyGo/internal/auth"
 	"github.com/thuanvo2405/chirpyGo/internal/database"
 )
 
@@ -182,7 +183,8 @@ func main() {
 
 	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
 		type paramaters struct {
-			Email string `json:"email"`
+			Password string `json:"password"`
+			Email    string `json:"email"`
 		}
 
 		decoder := json.NewDecoder(r.Body)
@@ -193,7 +195,16 @@ func main() {
 			return
 		}
 
-		newUser, err := apiCfg.database.CreateUser(r.Context(), params.Email)
+		hashedPassword, err := auth.HashPassword(params.Password)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "Couldn't hash password")
+			return
+		}
+
+		newUser, err := apiCfg.database.CreateUser(r.Context(), database.CreateUserParams{
+			Email:          params.Email,
+			HashedPassword: hashedPassword,
+		})
 		if err != nil {
 			respondWithError(w, http.StatusInternalServerError, "Couldn't create user")
 			return
@@ -207,6 +218,46 @@ func main() {
 		}
 
 		respondWithJSON(w, http.StatusCreated, user)
+	})
+
+	mux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
+		type paramaters struct {
+			Password string `json:"password"`
+			Email    string `json:"email"`
+		}
+
+		decoder := json.NewDecoder(r.Body)
+		params := paramaters{}
+		err := decoder.Decode(&params)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "Invalid request body")
+			return
+		}
+
+		userDB, err := apiCfg.database.GetUserByEmail(r.Context(), params.Email)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
+			return
+		}
+
+		checkHash, err := auth.CheckPasswordHash(params.Password, userDB.HashedPassword)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
+			return
+		}
+		if !checkHash {
+			respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
+			return
+		}
+
+		user := User{
+			ID:        userDB.ID,
+			CreatedAt: userDB.CreatedAt,
+			UpdatedAt: userDB.UpdatedAt,
+			Email:     userDB.Email,
+		}
+
+		respondWithJSON(w, http.StatusOK, user)
 	})
 
 	mux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
