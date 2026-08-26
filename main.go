@@ -1,17 +1,24 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
+
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
+	"github.com/thuanvo2405/chirpyGo/internal/database"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	database       *database.Queries
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -63,9 +70,19 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 }
 
 func main() {
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatalf("err: %v", err)
+	}
+
+	dbQueries := database.New(db)
+
 	mux := http.NewServeMux()
 	apiCfg := apiConfig{
 		fileserverHits: atomic.Int32{},
+		database:       dbQueries,
 	}
 
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
@@ -115,7 +132,7 @@ func main() {
 		Handler: mux,
 	}
 
-	err := s.ListenAndServe()
+	err = s.ListenAndServe()
 	if err != nil {
 		log.Fatal(err)
 	}
