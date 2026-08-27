@@ -23,6 +23,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	database       *database.Queries
 	platform       string
+	jwtSecretKey   string
 }
 
 type User struct {
@@ -30,6 +31,7 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token     string    `json:"token"`
 }
 
 type Chirp struct {
@@ -104,6 +106,7 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
+	JWT_SECRET_KEY := os.Getenv("JWT_SECRET_KEY")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		log.Fatalf("err: %v", err)
@@ -116,6 +119,7 @@ func main() {
 		fileserverHits: atomic.Int32{},
 		database:       dbQueries,
 		platform:       os.Getenv("PLATFORM"),
+		jwtSecretKey:   JWT_SECRET_KEY,
 	}
 
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
@@ -129,21 +133,26 @@ func main() {
 
 	mux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 		type parameters struct {
-			Body   string `json:"body"`
-			UserID string `json:"user_id"`
+			Body string `json:"body"`
+		}
+
+		token, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, "Couldn't find JWT")
+			return
+		}
+
+		userID, err := auth.ValidateJWT(token, apiCfg.jwtSecretKey)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, "Invalid token")
+			return
 		}
 
 		decoder := json.NewDecoder(r.Body)
 		params := parameters{}
-		err := decoder.Decode(&params)
+		err = decoder.Decode(&params)
 		if err != nil {
 			respondWithError(w, http.StatusBadRequest, "Invalid request body")
-			return
-		}
-
-		userID, err := uuid.Parse(params.UserID)
-		if err != nil {
-			respondWithError(w, http.StatusBadRequest, "Invalid user ID")
 			return
 		}
 
@@ -222,8 +231,9 @@ func main() {
 
 	mux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
 		type paramaters struct {
-			Password string `json:"password"`
-			Email    string `json:"email"`
+			Password         string `json:"password"`
+			Email            string `json:"email"`
+			ExpiresInSeconds int    `json:"expires_in_seconds"`
 		}
 
 		decoder := json.NewDecoder(r.Body)
@@ -232,6 +242,11 @@ func main() {
 		if err != nil {
 			respondWithError(w, http.StatusBadRequest, "Invalid request body")
 			return
+		}
+
+		defaultExpiration := time.Hour
+		if params.ExpiresInSeconds > 0 && params.ExpiresInSeconds < 3600 {
+			defaultExpiration = time.Duration(params.ExpiresInSeconds) * time.Second
 		}
 
 		userDB, err := apiCfg.database.GetUserByEmail(r.Context(), params.Email)
@@ -245,8 +260,15 @@ func main() {
 			respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
 			return
 		}
+
 		if !checkHash {
 			respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
+			return
+		}
+
+		token, err := auth.MakeJWT(userDB.ID, apiCfg.jwtSecretKey, defaultExpiration)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
@@ -255,6 +277,7 @@ func main() {
 			CreatedAt: userDB.CreatedAt,
 			UpdatedAt: userDB.UpdatedAt,
 			Email:     userDB.Email,
+			Token:     token,
 		}
 
 		respondWithJSON(w, http.StatusOK, user)
