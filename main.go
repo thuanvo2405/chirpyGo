@@ -27,11 +27,12 @@ type apiConfig struct {
 }
 
 type User struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
-	Token     string    `json:"token"`
+	ID           uuid.UUID `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Email        string    `json:"email"`
+	Token        string    `json:"token"`
+	RefreshToken string    `json:"refresh_token"`
 }
 
 type Chirp struct {
@@ -231,9 +232,8 @@ func main() {
 
 	mux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
 		type paramaters struct {
-			Password         string `json:"password"`
-			Email            string `json:"email"`
-			ExpiresInSeconds int    `json:"expires_in_seconds"`
+			Password string `json:"password"`
+			Email    string `json:"email"`
 		}
 
 		decoder := json.NewDecoder(r.Body)
@@ -244,11 +244,6 @@ func main() {
 			return
 		}
 
-		defaultExpiration := time.Hour
-		if params.ExpiresInSeconds > 0 && params.ExpiresInSeconds < 3600 {
-			defaultExpiration = time.Duration(params.ExpiresInSeconds) * time.Second
-		}
-
 		userDB, err := apiCfg.database.GetUserByEmail(r.Context(), params.Email)
 		if err != nil {
 			respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
@@ -256,31 +251,99 @@ func main() {
 		}
 
 		checkHash, err := auth.CheckPasswordHash(params.Password, userDB.HashedPassword)
-		if err != nil {
+		if err != nil || !checkHash {
 			respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
 			return
 		}
 
-		if !checkHash {
-			respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
-			return
-		}
-
-		token, err := auth.MakeJWT(userDB.ID, apiCfg.jwtSecretKey, defaultExpiration)
+		token, err := auth.MakeJWT(userDB.ID, apiCfg.jwtSecretKey, time.Hour)
 		if err != nil {
 			respondWithError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
+		refreshTokenStr, err := auth.MakeRefreshToken()
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		now := time.Now().UTC()
+		_, err = apiCfg.database.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+			Token:     refreshTokenStr,
+			CreatedAt: now,
+			UpdatedAt: now,
+			UserID:    userDB.ID,
+			ExpiresAt: now.Add(60 * 24 * time.Hour),
+			RevokedAt: sql.NullTime{Valid: false},
+		})
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "Couldn't save refresh token")
+			return
+		}
+
 		user := User{
-			ID:        userDB.ID,
-			CreatedAt: userDB.CreatedAt,
-			UpdatedAt: userDB.UpdatedAt,
-			Email:     userDB.Email,
-			Token:     token,
+			ID:           userDB.ID,
+			CreatedAt:    userDB.CreatedAt,
+			UpdatedAt:    userDB.UpdatedAt,
+			Email:        userDB.Email,
+			Token:        token,
+			RefreshToken: refreshTokenStr,
 		}
 
 		respondWithJSON(w, http.StatusOK, user)
+	})
+
+	mux.HandleFunc("POST /api/refresh", func(w http.ResponseWriter, r *http.Request) {
+		refreshToken, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, "Couldn't find refresh token")
+			return
+		}
+
+		tokenDB, err := apiCfg.database.GetRefreshToken(r.Context(), refreshToken)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, "Invalid refresh token")
+			return
+		}
+
+		if tokenDB.ExpiresAt.Before(time.Now()) || tokenDB.RevokedAt.Valid {
+			respondWithError(w, http.StatusUnauthorized, "Refresh token expired or revoked")
+			return
+		}
+
+		accessToken, err := auth.MakeJWT(tokenDB.UserID, apiCfg.jwtSecretKey, time.Hour)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "Couldn't create access token")
+			return
+		}
+
+		respondWithJSON(w, http.StatusOK, struct {
+			Token string `json:"token"`
+		}{
+			Token: accessToken,
+		})
+	})
+
+	mux.HandleFunc("POST /api/revoke", func(w http.ResponseWriter, r *http.Request) {
+		refreshToken, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, "Couldn't find refresh token")
+			return
+		}
+
+		now := time.Now().UTC()
+		err = apiCfg.database.RevokeRefreshToken(r.Context(), database.RevokeRefreshTokenParams{
+			RevokedAt: sql.NullTime{Time: now, Valid: true},
+			UpdatedAt: now,
+			Token:     refreshToken,
+		})
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "Couldn't revoke token")
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	mux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
