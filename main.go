@@ -443,6 +443,46 @@ func main() {
 		})
 	})
 
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", func(w http.ResponseWriter, r *http.Request) {
+		token, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, "Couldn't find JWT")
+			return
+		}
+
+		userID, err := auth.ValidateJWT(token, apiCfg.jwtSecretKey)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, "Invalid token")
+			return
+		}
+
+		chirpIDString := r.PathValue("chirpID")
+		chirpID, err := uuid.Parse(chirpIDString)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "Invalid chirp ID")
+			return
+		}
+
+		dbChirp, err := apiCfg.database.GetChirpById(r.Context(), chirpID)
+		if err != nil {
+			respondWithError(w, http.StatusNotFound, "Chirp not found")
+			return
+		}
+
+		if dbChirp.UserID != userID {
+			respondWithError(w, http.StatusForbidden, "You can't delete this chirp")
+			return
+		}
+
+		err = apiCfg.database.DeleteChirp(r.Context(), chirpID)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "Couldn't delete chirp")
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	s := &http.Server{
 		Addr:    ":8080",
 		Handler: mux,
